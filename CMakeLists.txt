@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.15.0 FATAL_ERROR)
 project(ThreadPool CXX)
 
-OPTION(BUILD_BENCHMARKS "Build benchmarks" OFF)
+OPTION(BUILD_BENCHMARKS "Build benchmarks" ON)
+OPTION(BUILD_APP "Build application" ON)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -12,15 +13,17 @@ set(CMAKE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(${CMAKE_DIR}/FetchCMakeUtilities.cmake)
 FetchCMakeUtilities()
 
-add_executable(threadpool-app source/main.cpp)
-
-target_link_libraries(threadpool-app PRIVATE threadpool-lib)
-target_include_directories(threadpool-app PRIVATE include)
-
-set_target_properties(threadpool-app PROPERTIES FOLDER ${PROJECT_NAME})
-set_target_properties(threadpool-app PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
-
 add_subdirectory(include)
+
+if (BUILD_APP)
+    add_executable(threadpool-app source/main.cpp)
+
+    target_link_libraries(threadpool-app PRIVATE threadpool-lib)
+    target_include_directories(threadpool-app PRIVATE include)
+
+    set_target_properties(threadpool-app PROPERTIES FOLDER ${PROJECT_NAME})
+    set_target_properties(threadpool-app PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+endif()
 
 if (BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)

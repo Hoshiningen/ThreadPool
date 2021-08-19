@@ -73,6 +73,8 @@ public:
         return future;
     }
 
+    std::size_t ThreadCount() const { return m_threads.size(); }
+
 private:
 
     void ThreadFunc(const std::stop_token& stopToken)
