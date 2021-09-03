@@ -84,9 +84,11 @@ private:
             std::unique_lock<std::mutex> lock{ m_queueMut };
             if (m_cv.wait(lock, stopToken, [this]() { return !m_taskQueue.empty(); }))
             {
-                // Execute the task at the front of the queue, then remove it
-                m_taskQueue.front()();
+                const auto task = m_taskQueue.front();
                 m_taskQueue.pop();
+
+                lock.unlock();
+                task();
             }
             else
             {

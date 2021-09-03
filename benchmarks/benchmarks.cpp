@@ -3,226 +3,96 @@
 #include <array>
 #include <execution>
 #include <numeric>
+#include <span>
 
 #include <benchmark/benchmark.h>
 
-static const std::array<std::vector<int>, 4> containers
+static std::vector<int> g_integers = []()
 {
-    []()
-    {
-        std::vector<int> items;
-        items.resize(100'000, 1);
+    std::vector<int> items;
+    items.resize(100'000'000, 1);
+    
+    return items;
+}();
 
-        return items;
-    }(),
-
-    []()
-    {
-        std::vector<int> items;
-        items.resize(1'000'000, 1);
-
-        return items;
-    }(),
-
-    []()
-    {
-        std::vector<int> items;
-        items.resize(10'000'000, 1);
-
-        return items;
-    }(),
-
-    []()
-    {
-        std::vector<int> items;
-        items.resize(100'000'000, 1);
-
-        return items;
-    }()
+static const std::array<std::span<const int>, 6> spans
+{
+    std::span{g_integers.cbegin(), std::next(g_integers.cbegin(), 1'000)},
+    std::span{g_integers.cbegin(), std::next(g_integers.cbegin(), 10'000)},
+    std::span{g_integers.cbegin(), std::next(g_integers.cbegin(), 100'000)},
+    std::span{g_integers.cbegin(), std::next(g_integers.cbegin(), 1'000'000)},
+    std::span{g_integers.cbegin(), std::next(g_integers.cbegin(), 10'000'000)},
+    std::span{g_integers.cbegin(), g_integers.cend()}
 };
 
-int ParallelSum(const std::vector<int>& container, ThreadPool& pool)
+template<typename T>
+int ParallelSum(const std::span<const T>& span, ThreadPool& pool)
 {
-    if (container.size() < pool.ThreadCount())
+    if (span.size() < pool.ThreadCount())
         return 0;
 
     const auto SumRange = [](auto begin, auto end) {
         return std::accumulate(begin, end, 0);
     };
 
-    const std::ptrdiff_t chunkSize = container.size() / pool.ThreadCount();
+    const std::ptrdiff_t chunkSize = span.size() / pool.ThreadCount();
 
-    std::vector<std::future<int>> results;
+    std::vector<std::future<T>> results;
     for (auto i = 1; i <= pool.ThreadCount(); ++i)
     {
-        auto begin = std::next(container.cbegin(), (i - 1) * chunkSize);
-        auto end = std::next(container.cbegin(), i * chunkSize);
-
-        results.push_back(pool.Run(SumRange, begin, end));
+        results.push_back(pool.Run(SumRange,
+            std::next(span.begin(), (i - 1) * chunkSize),
+            std::next(span.begin(), i * chunkSize)));
     }
 
-    return std::accumulate(results.begin(), results.end(), 0, [](int aggregate, std::future<int>& result) {
+    const auto result = std::accumulate(results.begin(), results.end(), 0, [](T aggregate, std::future<T>& result) {
         return aggregate + result.get();
     });
+
+    return result;
 }
 
-std::vector<bool> ThreadFuncMulti(std::size_t amount)
-{
-    std::vector<bool> things;
-
-    for (auto i = 0; i < amount; ++i)
-        things.push_back(i % 2 == 0);
-
-    return things;
-}
-
-static void ParallelSumBM(benchmark::State& state)
-{
-    ThreadPool pool;
-    std::vector<int> items;
-
-    for (auto _ : state)
-    {
-        benchmark::DoNotOptimize(ParallelSum(containers.at(state.range(0)), pool));
-    }
-}
-
-static void ReduceBM(benchmark::State& state)
-{
-    const std::vector<int>& items = containers.at(state.range(0));
-    for (auto _ : state)
-    {
-        benchmark::DoNotOptimize(std::reduce(std::execution::par_unseq, items.cbegin(), items.cend()));
-    }
-}
-
-static void AccumulateBM(benchmark::State& state)
-{
-    const std::vector<int>& items = containers.at(state.range(0));
-    for (auto _ : state)
-    {
-        benchmark::DoNotOptimize(std::accumulate(items.cbegin(), items.cend(), 0));
-    }
-}
+//==================================================================================
+// Throughput benchmarks
+//==================================================================================
 
 static void ThreadPoolTP(benchmark::State& state)
 {
-    ThreadPool pool{ static_cast<unsigned int>(state.range(0)) };
+    ThreadPool pool;
+    const auto& span = spans.at(state.range(0));
 
-    std::size_t itemsProcessed = 0;
     for (auto _ : state)
     {
-        state.PauseTiming();
-        std::vector<std::future<std::vector<bool>>> futures;
-        state.ResumeTiming();
-
-        for (std::size_t i = 0; i < state.range(1); ++i)
-            futures.push_back(pool.Run(ThreadFuncMulti, state.range(2)));
-
-        for (auto& future : futures) {
-            auto vector = future.get();
-            itemsProcessed += vector.size();
-        }
+        state.counters["sum"] = ParallelSum(span, pool);
     }
 
-    state.SetItemsProcessed(itemsProcessed);
+    state.SetItemsProcessed(state.iterations() * span.size());
 }
 
-static void LaunchDefaultTP(benchmark::State& state)
+static void ReduceTP(benchmark::State& state)
 {
-    ThreadPool pool{ static_cast<unsigned int>(state.range(0)) };
-
-    std::size_t itemsProcessed = 0;
+    const auto& span = spans.at(state.range(0));
     for (auto _ : state)
     {
-        state.PauseTiming();
-        std::vector<std::future<std::vector<bool>>> futures;
-        state.ResumeTiming();
-
-        for (std::size_t i = 0; i < state.range(1); ++i)
-            futures.push_back(std::async(ThreadFuncMulti, state.range(2)));
-
-        for (auto& future : futures) {
-            future.get();
-            ++itemsProcessed;
-        }
+        state.counters["sum"] = std::reduce(std::execution::par_unseq, span.begin(), span.end());
     }
 
-    state.SetItemsProcessed(itemsProcessed);
+    state.SetItemsProcessed(state.iterations() * span.size());
 }
 
-static void LaunchAsyncTP(benchmark::State& state)
+static void AccumulateTP(benchmark::State& state)
 {
-    ThreadPool pool{ static_cast<unsigned int>(state.range(0)) };
-
-    std::size_t itemsProcessed = 0;
+    const auto& span = spans.at(state.range(0));
     for (auto _ : state)
     {
-        state.PauseTiming();
-        std::vector<std::future<std::vector<bool>>> futures;
-        state.ResumeTiming();
-
-        for (std::size_t i = 0; i < state.range(1); ++i)
-            futures.push_back(std::async(std::launch::async, ThreadFuncMulti, state.range(2)));
-
-        for (auto& future : futures) {
-            future.get();
-            ++itemsProcessed;
-        }
+        state.counters["sum"] = std::accumulate(span.begin(), span.end(), 0);
     }
 
-    state.SetItemsProcessed(itemsProcessed);
+    state.SetItemsProcessed(state.iterations() * span.size());
 }
 
-static void LaunchDeferredTP(benchmark::State& state)
-{
-    ThreadPool pool{ static_cast<unsigned int>(state.range(0)) };
-
-    std::size_t itemsProcessed = 0;
-    for (auto _ : state)
-    {
-        state.PauseTiming();
-        std::vector<std::future<std::vector<bool>>> futures;
-        state.ResumeTiming();
-
-        for (std::size_t i = 0; i < state.range(1); ++i)
-            futures.push_back(std::async(std::launch::deferred, ThreadFuncMulti, state.range(2)));
-
-        for (auto& future : futures) {
-            future.get();
-            ++itemsProcessed;
-        }
-    }
-
-    state.SetItemsProcessed(itemsProcessed);
-}
-
-BENCHMARK(ParallelSumBM)->Args({0, 1, 2, 3});
-BENCHMARK(ReduceBM)->Args({0, 1, 2, 3});
-BENCHMARK(AccumulateBM)->Args({0, 1, 2, 3});
-
-BENCHMARK(ThreadPoolTP)->ArgsProduct({
-    {1, 2, 3, 4},
-    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-    {10000}
-});
-
-BENCHMARK(LaunchAsyncTP)->ArgsProduct({
-    {1, 2, 3, 4},
-    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-    {10000}
-});
-
-BENCHMARK(LaunchDeferredTP)->ArgsProduct({
-    {1, 2, 3, 4},
-    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-    {10000}
-});
-
-BENCHMARK(LaunchDefaultTP)->ArgsProduct({
-    {1, 2, 3, 4},
-    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-    {10000}
-});
+BENCHMARK(ThreadPoolTP)->DenseRange(0, 5)->UseRealTime();
+BENCHMARK(ReduceTP)->DenseRange(0, 5)->UseRealTime();
+BENCHMARK(AccumulateTP)->DenseRange(0, 5)->UseRealTime();
 
 BENCHMARK_MAIN();
